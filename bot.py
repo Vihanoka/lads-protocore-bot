@@ -137,9 +137,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     
     await update.message.reply_text(
-        "👋 Привет! Я помогу определить, стоит ли сохранить артефакт.\n\n"
-        "Используй /new чтобы начать проверку нового артефакта.\n"
-        "Используй /help для получения инструкций."
+        "👋 Привет! Я помогу определить, стоит ли сохранить протокор.\n\n"
+        "/new чтобы начать проверку нового артефакта.\n"
+        "/help для получения инструкций."
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -154,7 +154,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/new - начать проверку нового артефакта\n"
         "/cancel - отменить текущий выбор\n"
         "/help - эта справка\n\n"
-        "👤 Автор: @Vihanoka\n"
+        
         "По вопросам и комментариям пишите сюда @Vihanoka"
     )
 
