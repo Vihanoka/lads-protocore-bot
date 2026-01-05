@@ -1,18 +1,18 @@
 import logging
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-import os
 
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.DEBUG  # Изменено на DEBUG для подробных логов
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
 # Отключаем избыточные логи от httpx и telegram библиотек
 logging.getLogger('httpx').setLevel(logging.WARNING)
-logging.getLogger('telegram').setLevel(logging.INFO)  # Показываем логи telegram
+logging.getLogger('telegram').setLevel(logging.INFO)
 logging.getLogger('telegram.ext').setLevel(logging.INFO)
 
 # === НАСТРОЙКИ ===
@@ -33,7 +33,86 @@ SUB_STATS = [
 # Временное хранилище данных пользователей
 user_data = {}
 
-def evaluate_artifact(main_stat, sub_stats):
+# Словарь переводов
+TRANSLATIONS = {
+    'ru': {
+        'choose_language': '🌍 Выберите язык / Choose language:',
+        'language_set': '✅ Язык установлен: Русский',
+        'start_message': '👋 Привет! Я помогу определить, стоит ли сохранить артефакт.\n\nИспользуй /new чтобы начать проверку нового артефакта.\nИспользуй /help для получения инструкций.\nИспользуй /language для смены языка.',
+        'help_title': '📖 Как пользоваться:\n\n',
+        'help_steps': '1. Отправь /new чтобы начать\n2. Выбери основной стат\n3. Выбери 2-4 дополнительных стата\n4. Нажми \'Готово\' для получения рекомендации\n\n',
+        'help_commands': 'Команды:\n/new - начать проверку нового артефакта\n/cancel - отменить текущий выбор\n/language - сменить язык\n/help - эта справка\n\n',
+        'help_author': '👤 Автор: @Vihanoka\nПо вопросам и комментариям пишите сюда @Vihanoka',
+        'choose_main_stat': '🎯 Выберите основной стат артефакта:',
+        'choose_next_main_stat': '🎯 Выберите основной стат следующего артефакта:',
+        'main_stat': '⭐ Основной стат',
+        'choose_sub_stats': '📊 Выберите дополнительные статы',
+        'selected': 'Выбрано',
+        'min_warning': '⚠️ Минимум 2, максимум 4 стата',
+        'sub_stats_list': '\nВыбрано:\n',
+        'button_done': '✅ Готово',
+        'button_reset': '🔄 Сброс',
+        'min_stats_error': '❌ Нужно выбрать минимум 2 дополнительных стата.\nИспользуй /new чтобы начать заново.',
+        'result_title': '📋 Результат оценки:\n\n',
+        'sub_stats_title': '📊 Дополнительные статы:\n',
+        'cancel_message': '❌ Выбор отменен. Используй /new чтобы начать заново.',
+        'decision_keep': '✅ Сохранить',
+        'decision_delete': '❌ Удалить',
+        'decision_maybe': '⚠️ Потенциально удалить',
+        'reason_low_substats': 'Высокий шанс появления ненужных статов',
+        'reason_bad_main': 'Нерелевантный основной стат',
+        'reason_two_flats': '2 флат сабстата',
+        'reason_three_bad': '3 неподходящих стата',
+        'reason_flat_oath': 'Флат с Oath\'s Strength',
+        'reason_good_but_risky': 'Хорошее сочетание, но может вылезти ненужный флат или Oath\'s Strength',
+        'reason_may_get_bad': 'Может вылезти флат или Oath\'s Strength',
+        'reason_hp_def': 'HP и DEF не сочетаются',
+        'reason_crit_weakened': 'Crit и Weakened лучше разделять по разным протокорам',
+        'reason_rare_main': 'Но редкий основной стат - может пригодиться',
+    },
+    'en': {
+        'choose_language': '🌍 Choose language / Выберите язык:',
+        'language_set': '✅ Language set to: English',
+        'start_message': '👋 Hello! I will help you determine whether to keep an artifact.\n\nUse /new to start checking a new artifact.\nUse /help for instructions.\nUse /language to change language.',
+        'help_title': '📖 How to use:\n\n',
+        'help_steps': '1. Send /new to start\n2. Choose main stat\n3. Choose 2-4 substats\n4. Press \'Done\' to get recommendation\n\n',
+        'help_commands': 'Commands:\n/new - start checking new artifact\n/cancel - cancel current selection\n/language - change language\n/help - this help\n\n',
+        'help_author': '👤 Author: @Vihanoka\nFor questions and comments contact @Vihanoka',
+        'choose_main_stat': '🎯 Choose artifact main stat:',
+        'choose_next_main_stat': '🎯 Choose next artifact main stat:',
+        'main_stat': '⭐ Main stat',
+        'choose_sub_stats': '📊 Choose substats',
+        'selected': 'Selected',
+        'min_warning': '⚠️ Minimum 2, maximum 4 stats',
+        'sub_stats_list': '\nSelected:\n',
+        'button_done': '✅ Done',
+        'button_reset': '🔄 Reset',
+        'min_stats_error': '❌ You need to select at least 2 substats.\nUse /new to start again.',
+        'result_title': '📋 Evaluation result:\n\n',
+        'sub_stats_title': '📊 Substats:\n',
+        'cancel_message': '❌ Selection cancelled. Use /new to start again.',
+        'decision_keep': '✅ Keep',
+        'decision_delete': '❌ Delete',
+        'decision_maybe': '⚠️ Potentially delete',
+        'reason_low_substats': 'High chance of getting unwanted stats',
+        'reason_bad_main': 'Irrelevant main stat',
+        'reason_two_flats': '2 flat substats',
+        'reason_three_bad': '3 unsuitable stats',
+        'reason_flat_oath': 'Flat with Oath\'s Strength',
+        'reason_good_but_risky': 'Good combination, but may roll unwanted flat or Oath\'s Strength',
+        'reason_may_get_bad': 'May roll flat or Oath\'s Strength',
+        'reason_hp_def': 'HP and DEF don\'t synergize',
+        'reason_crit_weakened': 'Crit and Weakened better separated on different protocores',
+        'reason_rare_main': 'But rare main stat - might be useful',
+    }
+}
+
+def get_text(user_id, key):
+    """Получить текст на языке пользователя"""
+    lang = user_data.get(user_id, {}).get('language', 'en')
+    return TRANSLATIONS[lang].get(key, key)
+
+def evaluate_artifact(main_stat, sub_stats, user_id):
     """
     Оценивает артефакт на основе комбинации статов
     Возвращает: (решение, список причин для удаления, список причин для потенциального удаления)
@@ -50,11 +129,11 @@ def evaluate_artifact(main_stat, sub_stats):
     
     # Проверка 1: Меньше 2 сабстатов
     if len(sub_stats) < 2:
-        reasons_delete.append("Высокий шанс появления ненужных статов")
+        reasons_delete.append(get_text(user_id, 'reason_low_substats'))
     
     # Проверка 2: Основной стат HP Bonus или ATK Bonus
     if main_stat in ["HP Bonus", "ATK Bonus"]:
-        reasons_delete.append("Нерелевантный основной стат")
+        reasons_delete.append(get_text(user_id, 'reason_bad_main'))
     
     # Проверка 3: Попарно флат статы
     has_hp_atk = "HP" in sub_stats and "ATK" in sub_stats
@@ -62,7 +141,7 @@ def evaluate_artifact(main_stat, sub_stats):
     has_atk_def = "ATK" in sub_stats and "DEF" in sub_stats
     
     if has_hp_atk or has_hp_def or has_atk_def:
-        reasons_delete.append("2 флат сабстата")
+        reasons_delete.append(get_text(user_id, 'reason_two_flats'))
     
     # Проверка 4: 3 стата из комбинаций HP/ATK/DEF (флат или бонус)
     hp_count = int("HP" in sub_stats) + int("HP Bonus" in sub_stats)
@@ -71,13 +150,13 @@ def evaluate_artifact(main_stat, sub_stats):
     
     categories_with_stats = sum([hp_count > 0, atk_count > 0, def_count > 0])
     if categories_with_stats >= 3:
-        reasons_delete.append("3 неподходящих стата")
+        reasons_delete.append(get_text(user_id, 'reason_three_bad'))
     
     # Проверка 5: Флат с Oath's Strength
     has_flat = any(stat in sub_stats for stat in flat_stats)
     has_oath = "Oath's Strength" in sub_stats
     if has_flat and has_oath:
-        reasons_delete.append("Флат с Oath's Strength")
+        reasons_delete.append(get_text(user_id, 'reason_flat_oath'))
     
     # Проверка 6: Флат + всего 3 стата
     if has_flat and len(sub_stats) == 3:
@@ -87,9 +166,9 @@ def evaluate_artifact(main_stat, sub_stats):
         has_def_pair = "DEF" in sub_stats and "DEF Bonus" in sub_stats
         
         if has_hp_pair or has_atk_pair or has_def_pair:
-            reasons_potentially.append("Хорошее сочетание, но может вылезти ненужный флат или Oath's Strength")
+            reasons_potentially.append(get_text(user_id, 'reason_good_but_risky'))
         else:
-            reasons_delete.append("Может вылезти флат или Oath's Strength")
+            reasons_delete.append(get_text(user_id, 'reason_may_get_bad'))
     
     # Проверка 7: HP и DEF не сочетаются
     hp_def_combinations = [
@@ -103,77 +182,112 @@ def evaluate_artifact(main_stat, sub_stats):
     ]
     
     if any(hp_def_combinations):
-        reasons_delete.append("HP и DEF не сочетаются")
+        reasons_delete.append(get_text(user_id, 'reason_hp_def'))
     
     # Проверка 8: CRIT и Weakened
     has_crit = "CRIT Rate" in sub_stats or "CRIT DMG" in sub_stats
     has_weakened = "DMG Boost to Weakened" in sub_stats
     if has_crit and has_weakened:
-        reasons_potentially.append("Crit и Weakened лучше разделять по разным протокорам")
+        reasons_potentially.append(get_text(user_id, 'reason_crit_weakened'))
     
     # Переопределение: Редкий основной стат
     if is_rare_main and reasons_delete:
         # Переносим все причины удаления в потенциальное удаление
         reasons_potentially.extend(reasons_delete)
         reasons_delete = []
-        reasons_potentially.append("Но редкий основной стат - может пригодиться")
+        reasons_potentially.append(get_text(user_id, 'reason_rare_main'))
     
-    # Определяем итоговое решение
-    if reasons_delete:
-        decision = "❌ Удалить"
-    elif reasons_potentially:
-        decision = "⚠️ Потенциально удалить"
+    return reasons_delete, reasons_potentially
+
+async def choose_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать выбор языка"""
+    keyboard = [
+        [
+            InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru"),
+            InlineKeyboardButton("🇬🇧 English", callback_data="lang_en")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if update.message:
+        await update.message.reply_text(
+            TRANSLATIONS['en']['choose_language'],
+            reply_markup=reply_markup
+        )
     else:
-        decision = "✅ Сохранить"
-    
-    return decision, reasons_delete, reasons_potentially
+        await update.callback_query.message.reply_text(
+            TRANSLATIONS['en']['choose_language'],
+            reply_markup=reply_markup
+        )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /start"""
     user_id = update.effective_user.id
-    user_data[user_id] = {
-        'main_stat': None,
-        'sub_stats': []
-    }
     
-    await update.message.reply_text(
-        "👋 Привет! Я помогу определить, стоит ли сохранить протокор.\n\n"
-        "/new чтобы начать проверку нового артефакта.\n"
-        "/help для получения инструкций."
-    )
+    # Если язык уже выбран, показываем стартовое сообщение
+    if user_id in user_data and 'language' in user_data[user_id]:
+        user_data[user_id] = {
+            'language': user_data[user_id]['language'],
+            'main_stat': None,
+            'sub_stats': []
+        }
+        await update.message.reply_text(get_text(user_id, 'start_message'))
+    else:
+        # Первый запуск - показываем выбор языка
+        user_data[user_id] = {
+            'language': None,
+            'main_stat': None,
+            'sub_stats': []
+        }
+        await choose_language(update, context)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /help"""
+    user_id = update.effective_user.id
     await update.message.reply_text(
-        "📖 Как пользоваться:\n\n"
-        "1. Отправь /new чтобы начать\n"
-        "2. Выбери основной стат\n"
-        "3. Выбери 2-4 дополнительных стата\n"
-        "4. Нажми 'Готово' для получения рекомендации\n\n"
-        "Команды:\n"
-        "/new - начать проверку нового артефакта\n"
-        "/cancel - отменить текущий выбор\n"
-        "/help - эта справка\n\n"
-        
-        "По вопросам и комментариям пишите сюда @Vihanoka"
+        get_text(user_id, 'help_title') +
+        get_text(user_id, 'help_steps') +
+        get_text(user_id, 'help_commands') +
+        get_text(user_id, 'help_author')
     )
+
+async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /language"""
+    await choose_language(update, context)
 
 async def new_artifact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Начать выбор нового артефакта"""
     user_id = update.effective_user.id
-    user_data[user_id] = {
-        'main_stat': None,
-        'sub_stats': []
-    }
+    
+    # Если язык не выбран, показываем выбор языка
+    if user_id not in user_data or 'language' not in user_data[user_id]:
+        await choose_language(update, context)
+        return
+    
+    user_data[user_id]['main_stat'] = None
+    user_data[user_id]['sub_stats'] = []
     
     # Создаем кнопки для выбора основного стата
     keyboard = create_main_stat_keyboard()
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
-        "🎯 Выберите основной стат артефакта:",
+        get_text(user_id, 'choose_main_stat'),
         reply_markup=reply_markup
     )
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отменить текущий выбор"""
+    user_id = update.effective_user.id
+    if user_id in user_data:
+        lang = user_data[user_id].get('language')
+        user_data[user_id] = {
+            'language': lang,
+            'main_stat': None,
+            'sub_stats': []
+        }
+    
+    await update.message.reply_text(get_text(user_id, 'cancel_message'))
 
 def create_main_stat_keyboard():
     """Создаёт клавиатуру для выбора основного стата"""
@@ -186,28 +300,6 @@ def create_main_stat_keyboard():
         keyboard.append(row)
     return keyboard
 
-async def show_new_artifact_menu(query, user_id):
-    """Показывает меню для выбора нового артефакта"""
-    # Создаем кнопки для выбора основного стата
-    keyboard = create_main_stat_keyboard()
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    # Отправляем новое сообщение вместо редактирования старого
-    await query.message.reply_text(
-        "🎯 Выберите основной стат следующего артефакта:",
-        reply_markup=reply_markup
-    )
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отменить текущий выбор"""
-    user_id = update.effective_user.id
-    if user_id in user_data:
-        del user_data[user_id]
-    
-    await update.message.reply_text(
-        "❌ Выбор отменен. Используй /new чтобы начать заново."
-    )
-
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка нажатий на кнопки"""
     query = update.callback_query
@@ -218,14 +310,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Инициализация данных пользователя, если их нет
     if user_id not in user_data:
         user_data[user_id] = {
+            'language': None,
             'main_stat': None,
             'sub_stats': []
         }
     
     data = query.data
     
+    # Выбор языка
+    if data.startswith("lang_"):
+        lang = data.replace("lang_", "")
+        user_data[user_id]['language'] = lang
+        await query.edit_message_text(TRANSLATIONS[lang]['language_set'])
+        await query.message.reply_text(get_text(user_id, 'start_message'))
+    
     # Выбор основного стата
-    if data.startswith("main_"):
+    elif data.startswith("main_"):
         stat = data.replace("main_", "")
         user_data[user_id]['main_stat'] = stat
         
@@ -253,11 +353,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Сброс выбора
     elif data == "reset":
+        lang = user_data[user_id].get('language')
         user_data[user_id] = {
+            'language': lang,
             'main_stat': None,
             'sub_stats': []
         }
-        await query.edit_message_text("❌ Выбор сброшен. Используй /new чтобы начать заново.")
+        await query.edit_message_text(get_text(user_id, 'cancel_message'))
 
 async def show_sub_stats_menu(query, user_id):
     """Показывает меню выбора дополнительных статов"""
@@ -284,21 +386,27 @@ async def show_sub_stats_menu(query, user_id):
     # Кнопки управления
     control_row = []
     if len(selected_subs) >= 2:
-        control_row.append(InlineKeyboardButton("✅ Готово", callback_data="done"))
-    control_row.append(InlineKeyboardButton("🔄 Сброс", callback_data="reset"))
+        control_row.append(InlineKeyboardButton(
+            get_text(user_id, 'button_done'),
+            callback_data="done"
+        ))
+    control_row.append(InlineKeyboardButton(
+        get_text(user_id, 'button_reset'),
+        callback_data="reset"
+    ))
     keyboard.append(control_row)
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     text = (
-        f"⭐ Основной стат: {main_stat}\n\n"
-        f"📊 Выберите дополнительные статы ({len(selected_subs)}/4):\n"
+        f"{get_text(user_id, 'main_stat')}: {main_stat}\n\n"
+        f"{get_text(user_id, 'choose_sub_stats')} ({len(selected_subs)}/4):\n"
     )
     
     if selected_subs:
-        text += "\nВыбрано:\n" + "\n".join([f"  • {s}" for s in selected_subs])
+        text += get_text(user_id, 'sub_stats_list') + "\n".join([f"  • {s}" for s in selected_subs])
     
-    text += "\n\n⚠️ Минимум 2, максимум 4 стата"
+    text += "\n\n" + get_text(user_id, 'min_warning')
     
     await query.edit_message_text(text, reply_markup=reply_markup)
 
@@ -308,19 +416,16 @@ async def finish_selection(query, user_id):
     sub_stats = user_data[user_id]['sub_stats']
     
     if len(sub_stats) < 2:
-        await query.edit_message_text(
-            "❌ Нужно выбрать минимум 2 дополнительных стата.\n"
-            "Используй /new чтобы начать заново."
-        )
+        await query.edit_message_text(get_text(user_id, 'min_stats_error'))
         return
     
     # Оцениваем артефакт
-    decision, reasons_delete, reasons_potentially = evaluate_artifact(main_stat, sub_stats)
+    reasons_delete, reasons_potentially = evaluate_artifact(main_stat, sub_stats, user_id)
     
     result_text = (
-        f"📋 Результат оценки:\n\n"
-        f"⭐ Основной стат: {main_stat}\n"
-        f"📊 Дополнительные статы:\n"
+        get_text(user_id, 'result_title') +
+        f"{get_text(user_id, 'main_stat')}: {main_stat}\n" +
+        get_text(user_id, 'sub_stats_title')
     )
     result_text += "\n".join([f"  • {s}" for s in sub_stats])
     result_text += "\n\n"
@@ -328,32 +433,46 @@ async def finish_selection(query, user_id):
     # Форматируем вывод в зависимости от наличия причин
     if reasons_potentially and reasons_delete:
         # Есть оба типа причин
-        result_text += "⚠️ Потенциально удалить:\n"
+        result_text += get_text(user_id, 'decision_maybe') + ":\n"
         result_text += "\n".join([f"  • {r}" for r in reasons_potentially])
-        result_text += "\n\n❌ Удалить:\n"
+        result_text += "\n\n" + get_text(user_id, 'decision_delete') + ":\n"
         result_text += "\n".join([f"  • {r}" for r in reasons_delete])
     elif reasons_delete:
         # Только причины для удаления
-        result_text += "❌ Удалить:\n"
+        result_text += get_text(user_id, 'decision_delete') + ":\n"
         result_text += "\n".join([f"  • {r}" for r in reasons_delete])
     elif reasons_potentially:
         # Только причины для потенциального удаления
-        result_text += "⚠️ Потенциально удалить:\n"
+        result_text += get_text(user_id, 'decision_maybe') + ":\n"
         result_text += "\n".join([f"  • {r}" for r in reasons_potentially])
     else:
         # Нет причин - сохранить
-        result_text += "✅ Сохранить"
+        result_text += get_text(user_id, 'decision_keep')
     
     await query.edit_message_text(result_text)
     
     # Очищаем данные пользователя и запускаем новую проверку
+    lang = user_data[user_id]['language']
     user_data[user_id] = {
+        'language': lang,
         'main_stat': None,
         'sub_stats': []
     }
     
     # Автоматически показываем меню для следующего артефакта
     await show_new_artifact_menu(query, user_id)
+
+async def show_new_artifact_menu(query, user_id):
+    """Показывает меню для выбора нового артефакта"""
+    # Создаем кнопки для выбора основного стата
+    keyboard = create_main_stat_keyboard()
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Отправляем новое сообщение вместо редактирования старого
+    await query.message.reply_text(
+        get_text(user_id, 'choose_next_main_stat'),
+        reply_markup=reply_markup
+    )
 
 def main():
     """Запуск бота"""
@@ -363,6 +482,7 @@ def main():
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("language", language_command))
     application.add_handler(CommandHandler("new", new_artifact))
     application.add_handler(CommandHandler("cancel", cancel))
     application.add_handler(CallbackQueryHandler(button_callback))
