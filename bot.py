@@ -1,5 +1,6 @@
 import logging
 import os
+import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
@@ -33,6 +34,44 @@ SUB_STATS = [
 # Временное хранилище данных пользователей
 user_data = {}
 
+# Статистика бота
+stats = {
+    'total_checks': 0,
+    'decisions': {
+        'keep': 0,
+        'delete': 0,
+        'maybe': 0
+    },
+    'unique_users': set()
+}
+
+def save_stats():
+    """Сохраняет статистику в файл"""
+    try:
+        stats_to_save = {
+            'total_checks': stats['total_checks'],
+            'decisions': stats['decisions'],
+            'unique_users': len(stats['unique_users'])
+        }
+        with open('bot_stats.json', 'w') as f:
+            json.dump(stats_to_save, f)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения статистики: {e}")
+
+def load_stats():
+    """Загружает статистику из файла"""
+    try:
+        with open('bot_stats.json', 'r') as f:
+            loaded = json.load(f)
+            stats['total_checks'] = loaded.get('total_checks', 0)
+            stats['decisions'] = loaded.get('decisions', {'keep': 0, 'delete': 0, 'maybe': 0})
+            # unique_users загружается как число, но мы используем set
+            logger.info(f"Загружена статистика: {stats['total_checks']} проверок")
+    except FileNotFoundError:
+        logger.info("Файл статистики не найден, начинаем с нуля")
+    except Exception as e:
+        logger.error(f"Ошибка загрузки статистики: {e}")
+
 # Словарь переводов
 TRANSLATIONS = {
     'ru': {
@@ -41,8 +80,8 @@ TRANSLATIONS = {
         'start_message': '👋 Привет! Я помогу определить, стоит ли сохранить протокор.\n\nИспользуй /new чтобы начать проверку нового протокора.\nИспользуй /help для получения инструкций.\nИспользуй /language для смены языка.',
         'help_title': '📖 Как пользоваться:\n\n',
         'help_steps': '1. Отправь /new чтобы начать\n2. Выбери основной стат\n3. Выбери 2-4 дополнительных стата\n4. Нажми \'Готово\' для получения рекомендации\n\n',
-        'help_commands': 'Команды:\n/new - начать проверку нового протокора\n/cancel - отменить текущий выбор\n/language - сменить язык\n/help - эта справка\n\n',
-        'help_author': '👤 По вопросам и комментариям пишите сюда @Vihanoka',
+        'help_commands': 'Команды:\n/new - начать проверку нового протокора\n/cancel - отменить текущий выбор\n/language - сменить язык\n/stats - статистика использования\n/help - эта справка\n\n',
+        'help_author': '👤 Автор: @Vihanoka\nПо вопросам и комментариям пишите сюда @Vihanoka',
         'choose_main_stat': '🎯 Выберите основной стат протокора:',
         'choose_next_main_stat': '🎯 Выберите основной стат следующего протокора:',
         'main_stat': '⭐ Основной стат',
@@ -69,6 +108,13 @@ TRANSLATIONS = {
         'reason_hp_def': 'HP и DEF не сочетаются',
         'reason_crit_weakened': 'Crit и Weakened лучше разделять по разным протокорам',
         'reason_rare_main': 'Но редкий основной стат - может пригодиться',
+        'stats_title': '📊 Статистика использования бота:\n\n',
+        'stats_total': '🔢 Всего проверок',
+        'stats_users': '👥 Уникальных пользователей',
+        'stats_decisions': '\n📋 Решения:',
+        'stats_keep': '  ✅ Сохранить',
+        'stats_delete': '  ❌ Удалить',
+        'stats_maybe': '  ⚠️ Потенциально удалить',
     },
     'en': {
         'choose_language': '🌍 Choose language / Выберите язык:',
@@ -76,7 +122,7 @@ TRANSLATIONS = {
         'start_message': '👋 Hello! I will help you determine whether to keep a protocore.\n\nUse /new to start checking a new protocore.\nUse /help for instructions.\nUse /language to change language.',
         'help_title': '📖 How to use:\n\n',
         'help_steps': '1. Send /new to start\n2. Choose main stat\n3. Choose 2-4 substats\n4. Press \'Done\' to get recommendation\n\n',
-        'help_commands': 'Commands:\n/new - start checking new protocore\n/cancel - cancel current selection\n/language - change language\n/help - this help\n\n',
+        'help_commands': 'Commands:\n/new - start checking new protocore\n/cancel - cancel current selection\n/language - change language\n/stats - usage statistics\n/help - this help\n\n',
         'help_author': '👤 Author: @Vihanoka\nFor questions and comments contact @Vihanoka',
         'choose_main_stat': '🎯 Choose protocore main stat:',
         'choose_next_main_stat': '🎯 Choose next protocore main stat:',
@@ -104,6 +150,13 @@ TRANSLATIONS = {
         'reason_hp_def': 'HP and DEF don\'t synergize',
         'reason_crit_weakened': 'Crit and Weakened better separated on different protocores',
         'reason_rare_main': 'But rare main stat - might be useful',
+        'stats_title': '📊 Bot usage statistics:\n\n',
+        'stats_total': '🔢 Total checks',
+        'stats_users': '👥 Unique users',
+        'stats_decisions': '\n📋 Decisions:',
+        'stats_keep': '  ✅ Keep',
+        'stats_delete': '  ❌ Delete',
+        'stats_maybe': '  ⚠️ Potentially delete',
     }
 }
 
@@ -254,6 +307,20 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /language"""
     await choose_language(update, context)
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /stats - показать статистику"""
+    user_id = update.effective_user.id
+    
+    text = get_text(user_id, 'stats_title')
+    text += f"{get_text(user_id, 'stats_total')}: {stats['total_checks']}\n"
+    text += f"{get_text(user_id, 'stats_users')}: {len(stats['unique_users'])}\n"
+    text += get_text(user_id, 'stats_decisions') + "\n"
+    text += f"{get_text(user_id, 'stats_keep')}: {stats['decisions']['keep']}\n"
+    text += f"{get_text(user_id, 'stats_maybe')}: {stats['decisions']['maybe']}\n"
+    text += f"{get_text(user_id, 'stats_delete')}: {stats['decisions']['delete']}"
+    
+    await update.message.reply_text(text)
 
 async def new_artifact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Начать выбор нового артефакта"""
@@ -422,6 +489,21 @@ async def finish_selection(query, user_id):
     # Оцениваем артефакт
     reasons_delete, reasons_potentially = evaluate_artifact(main_stat, sub_stats, user_id)
     
+    # Обновляем статистику
+    stats['total_checks'] += 1
+    stats['unique_users'].add(user_id)
+    
+    # Определяем тип решения для статистики
+    if reasons_delete:
+        stats['decisions']['delete'] += 1
+    elif reasons_potentially:
+        stats['decisions']['maybe'] += 1
+    else:
+        stats['decisions']['keep'] += 1
+    
+    # Сохраняем статистику
+    save_stats()
+    
     result_text = (
         get_text(user_id, 'result_title') +
         f"{get_text(user_id, 'main_stat')}: {main_stat}\n" +
@@ -476,6 +558,9 @@ async def show_new_artifact_menu(query, user_id):
 
 def main():
     """Запуск бота"""
+    # Загружаем статистику при запуске
+    load_stats()
+    
     # Создаём приложение
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
@@ -483,6 +568,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("language", language_command))
+    application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("new", new_artifact))
     application.add_handler(CommandHandler("cancel", cancel))
     application.add_handler(CallbackQueryHandler(button_callback))
